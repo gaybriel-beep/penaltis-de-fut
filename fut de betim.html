@@ -1,0 +1,331 @@
+!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Campeonato de Pênaltis</title>
+<style>
+  body {
+    background: #0b132b;
+    color: #fff;
+    font-family: Arial, sans-serif;
+    text-align: center;
+    margin: 0;
+  }
+  h1 { margin: 16px 0 4px; }
+  #faseInfo { margin: 0 0 8px; opacity: .9; }
+  #placar { margin: 8px 0 16px; font-weight: bold; }
+  canvas {
+    background: #1c2541;
+    display: block;
+    margin: 10px auto 20px;
+    border: 3px solid #3a506b;
+    border-radius: 8px;
+  }
+  .hint { opacity: .85; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+  <h1>🏆 Campeonato de Pênaltis 🏆</h1>
+  <p class="hint">Chute: segure ← ↑ → e solte | Curva: A/D | Altura: W (alto), S (baixo) | Defesa: ← ↑ → | Reiniciar: R</p>
+  <p id="faseInfo"></p>
+  <canvas id="game" width="640" height="420"></canvas>
+  <p id="placar"></p>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Config do campeonato (quartas -> semi -> final)
+const adversarios = ["CPU 1", "CPU 3", "CPU 7"];
+const fasesNomes = ["Quartas de final", "Semifinal", "Final"];
+let idxPartida = 0;
+let faseTorneio = fasesNomes[idxPartida];
+let adversario = adversarios[idxPartida];
+
+// Estado da disputa
+let rodada = 1, maxRodadas = 5;
+let golsJogador = 0, golsCPU = 0;
+let mensagem = "Sua vez de chutar!";
+let fase = "chute"; // "chute" ou "defesa"
+let animando = false;
+let terminado = false;
+
+// Mecânica de chute
+let carregando = false, forca = 0, direcaoChute = null;
+let curva = 0;   // -1 esq, 0 reto, 1 dir
+let altura = 1;  // 0 baixo, 1 médio, 2 alto
+
+// IA adaptativa do goleiro (aprende seu padrão de direção)
+let historicoChutes = [0,0,0];
+
+// Posições
+let bolaX = 320, bolaY = 380;
+let goleiroX = 300;
+
+// HUD
+const faseInfo = document.getElementById('faseInfo');
+const placar = document.getElementById('placar');
+atualizarCabeçalho();
+atualizarPlacar();
+function desenharCampo() {
+  ctx.fillStyle = "#1c2541";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Gol
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(220, 70, 200, 10); // travessão
+  ctx.fillRect(220, 70, 10, 110); // poste esq
+  ctx.fillRect(410, 70, 10, 110); // poste dir
+
+  // Goleiro
+  ctx.fillStyle = "#ff5a5f";
+  ctx.fillRect(goleiroX, 120, 40, 40);
+
+  // Bola
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(bolaX, bolaY, 10, 0, Math.PI*2);
+  ctx.fill();
+
+  // Barra de força
+  if (fase === "chute" && !animando && !terminado) {
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(40, 395, 120, 12);
+    ctx.fillStyle = "#32cd32";
+    ctx.fillRect(40, 395, Math.max(0, Math.min(120, forca*1.2)), 12);
+    ctx.strokeStyle = "#000";
+    ctx.strokeRect(40, 395, 120, 12);
+
+    // Indicadores de curva/altura
+    ctx.fillStyle = "rgba(255,255,255,.9)";
+    ctx.font = "12px Arial";
+    ctx.textAlign = "left";
+    const curvaTxt = curva === -1 ? "Curva: ←" : curva === 1 ? "Curva: →" : "Curva: reta";
+    const altTxt = altura === 0 ? "Altura: baixo" : altura === 2 ? "Altura: alto" : "Altura: médio";
+    ctx.fillText(`${curvaTxt} | ${altTxt}`, 40, 386);
+  }
+
+  // Mensagem
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "20px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText(mensagem, canvas.width/2, canvas.height - 18);
+}
+
+function atualizarPlacar() {
+  placar.innerText = `Rodada ${rodada} | Você ${golsJogador} x ${golsCPU} ${adversario}`;
+}
+function atualizarCabeçalho() {
+  faseInfo.innerText = `${faseTorneio} — Adversário: ${adversario}`;
+}
+
+function animarJogada(direcao, defesaCPU, vel, curvaVal, alturaVal) {
+  animando = true;
+  const alvoBolaX = direcao === 0 ? 250 : direcao === 1 ? 320 : 390;
+  const alvoBolaY = alturaVal === 0 ? 150 : alturaVal === 1 ? 110 : 85;
+  const alvoGoleiroX = defesaCPU === 0 ? 240 : defesaCPU === 1 ? 300 : 360;
+
+  const passos = Math.max(12, 34 - vel * 10);
+  let passo = 0;
+
+  const timer = setInterval(() => {
+    passo++;
+    const offsetCurva = curvaVal * Math.sin((passo / passos) * Math.PI) * 44;
+    bolaX += ((alvoBolaX + offsetCurva) - bolaX) / (passos - passo + 1);
+    bolaY += (alvoBolaY - bolaY) / (passos - passo + 1);
+    goleiroX += (alvoGoleiroX - goleiroX) / (passos - passo + 1);
+
+    desenharCampo();
+
+    if (passo >= passos) {
+      clearInterval(timer);
+      verificarResultado(direcao, defesaCPU);
+    }
+  }, 28);
+}
+ function verificarResultado(chute, defesa) {
+  let gol = false;
+
+  if (chute === defesa) {
+    if (fase === "chute") {
+      mensagem = "😢 Goleiro defendeu!";
+    } else {
+      mensagem = "⚽ Gol do CPU!";
+      golsCPU++;
+      gol = true;
+    }
+  } else {
+    if (fase === "chute") {
+      mensagem = "🎯 Gol!";
+      golsJogador++;
+      gol = true;
+    } else {
+      mensagem = "🙌 Defesa!";
+    }
+  }
+
+  // Atualiza placar imediatamente se houve gol
+  if (gol) atualizarPlacar();
+
+  // Aguarda para mostrar a mensagem antes de mudar de fase
+  setTimeout(() => {
+    if (fase === "chute") {
+      fase = "defesa";
+      iniciarDefesa();
+    } else {
+      if (rodada >= maxRodadas && golsJogador !== golsCPU) {
+        fimDePartida();
+      } else if (rodada >= maxRodadas && golsJogador === golsCPU) {
+        maxRodadas++;
+        rodada++;
+        fase = "chute";
+        mensagem = "Morte súbita! Sua vez de chutar!";
+        resetPosicoes();
+      } else {
+        rodada++;
+        fase = "chute";
+        mensagem = "Sua vez de chutar!";
+        resetPosicoes();
+      }
+      atualizarPlacar();
+    }
+    animando = false;
+  }, 800);
+}
+
+function iniciarDefesa() {
+  mensagem = "Defenda! ← ↑ →";
+  resetPosicoes();
+}
+
+function resetPosicoes() {
+  bolaX = 320; bolaY = 380;
+  goleiroX = 300;
+  forca = 0; carregando = false; direcaoChute = null; curva = 0; altura = 1;
+}
+
+function fimDePartida() {
+  if (golsJogador > golsCPU) {
+    mensagem = `Vitória! Você eliminou ${adversario}`;
+    avancarNoTorneio();
+  } else {
+    mensagem = `Derrota! Eliminado por ${adversario}. Pressione R para reiniciar.`;
+    terminado = true;
+    animando = true;
+  }
+}
+
+function avancarNoTorneio() {
+  idxPartida++;
+  if (idxPartida >= adversarios.length) {
+    mensagem = "🏆 Campeão! Pressione R para jogar novamente.";
+    terminado = true;
+    animando = true;
+    atualizarPlacar();
+    return;
+  }
+  faseTorneio = fasesNomes[idxPartida];
+  adversario = adversarios[idxPartida];
+  atualizarCabeçalho();
+  rodada = 1; maxRodadas = 5; golsJogador = 0; golsCPU = 0;
+  fase = "chute"; mensagem = `Próximo: ${adversario}. Sua vez de chutar!`;
+  historicoChutes = [0,0,0];
+  terminado = false; animando = false;
+  resetPosicoes();
+  atualizarPlacar();
+}
+// IA: defesa do CPU (aprende seu padrão de direção)
+function escolhaDefesaCPU() {
+  const total = historicoChutes.reduce((a,b)=>a+b,0);
+  if (total < 3) return Math.floor(Math.random()*3);
+  const idx = historicoChutes.indexOf(Math.max(...historicoChutes));
+  return Math.random() < 0.75 ? idx : Math.floor(Math.random()*3);
+}
+
+// IA: chute do CPU (direção aleatória)
+function escolhaChuteCPU() {
+  return Math.floor(Math.random()*3);
+}
+
+// Controles
+document.addEventListener('keydown', (e) => {
+  const k = e.key;
+  if (terminado && k.toLowerCase() === 'r') {
+    reiniciarTorneio();
+    return;
+  }
+  if (animando) return;
+
+  // Chute do jogador
+  if (fase === "chute") {
+    if (["ArrowLeft","ArrowUp","ArrowRight"].includes(k) && !carregando) {
+      direcaoChute = k === "ArrowLeft" ? 0 : k === "ArrowUp" ? 1 : 2;
+      carregando = true;
+    }
+    if (k.toLowerCase() === "a") curva = -1;
+    if (k.toLowerCase() === "d") curva = 1;
+    if (k.toLowerCase() === "w") altura = 2;
+    if (k.toLowerCase() === "s") altura = 0;
+  }
+  // Defesa do jogador contra CPU (CPU pode marcar mesmo se você acerta o lado)
+  else if (fase === "defesa") {
+    if (["ArrowLeft","ArrowUp","ArrowRight"].includes(k)) {
+      const defesaJogador = k === "ArrowLeft" ? 0 : k === "ArrowUp" ? 1 : 2;
+      const chuteCPU = escolhaChuteCPU();
+      const alturaCPU = Math.floor(Math.random() * 3); // 0 baixo, 1 médio, 2 alto
+      const curvaCPU = Math.random() < 0.4 ? (Math.random() < 0.5 ? -1 : 1) : 0;
+      const velCPU = 1.5 + Math.random() * 1.5;
+
+      // Chance de erro mesmo acertando o lado
+      let defesaEfetiva = defesaJogador;
+      if (defesaJogador === chuteCPU && Math.random() < 0.35) {
+        defesaEfetiva = (defesaJogador + (Math.random() < 0.5 ? 1 : 2)) % 3;
+      }
+
+      animarJogada(chuteCPU, defesaEfetiva, velCPU, curvaCPU, alturaCPU);
+    }
+  }
+});
+
+document.addEventListener('keyup', (e) => {
+  if (fase === "chute" && carregando && ["ArrowLeft","ArrowUp","ArrowRight"].includes(e.key)) {
+    carregando = false;
+    historicoChutes[direcaoChute]++;
+    const defesaCPU = escolhaDefesaCPU();
+    const vel = Math.max(0.6, (forca / 100) * 3.2);
+    animarJogada(direcaoChute, defesaCPU, vel, curva, altura);
+  }
+});
+
+// Loop principal
+function loop() {
+  if (carregando) {
+    forca += 2.2;
+    if (forca > 100) forca = 100;
+  }
+  desenharCampo();
+  requestAnimationFrame(loop);
+}
+
+// Reinicia torneio
+function reiniciarTorneio() {
+  idxPartida = 0;
+  faseTorneio = fasesNomes[idxPartida];
+  adversario = adversarios[idxPartida];
+  historicoChutes = [0,0,0];
+
+  rodada = 1; maxRodadas = 5;
+  golsJogador = 0; golsCPU = 0;
+  fase = "chute"; mensagem = "Sua vez de chutar!";
+  terminado = false; animando = false;
+
+  atualizarCabeçalho();
+  atualizarPlacar();
+  resetPosicoes();
+}
+
+// Start
+loop();
+</script>
+</body>
+</html>
